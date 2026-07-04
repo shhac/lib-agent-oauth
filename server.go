@@ -3,8 +3,8 @@ package oauth
 import (
 	"crypto/ed25519"
 	"errors"
-	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -105,7 +105,7 @@ func New(cfg Config) (*Server, error) {
 	// (multi-audience host mode). Deduped, default first.
 	resources := []string{resource}
 	for _, r := range cfg.Resources {
-		if r = strings.TrimRight(r, "/"); r != "" && r != resource && !contains(resources, r) {
+		if r = strings.TrimRight(r, "/"); r != "" && r != resource && !slices.Contains(resources, r) {
 			resources = append(resources, r)
 		}
 	}
@@ -161,20 +161,10 @@ func (s *Server) resolveResource(requested string) (string, bool) {
 		return s.resource, true
 	}
 	requested = strings.TrimRight(requested, "/")
-	if contains(s.resources, requested) {
+	if slices.Contains(s.resources, requested) {
 		return requested, true
 	}
 	return "", false
-}
-
-// contains reports whether v is in xs.
-func contains(xs []string, v string) bool {
-	for _, x := range xs {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }
 
 // PairingCode returns the current pairing code (generating it on first use), for
@@ -222,55 +212,8 @@ func (s *Server) Protect(next http.Handler) http.Handler {
 	return protectHandler(s.issuer.Validate, s.prmURL(), next)
 }
 
-// protectHandler gates next behind a valid, validate-passing bearer token,
-// attaching the carried identity to the request context; otherwise it answers
-// the 401 discovery challenge pointing at prmURL. Shared by the local Server
-// and a delegate ResourceServer so the gate can't drift between them.
-func protectHandler(validate func(string) (*Verified, error), prmURL string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := bearerToken(r)
-		if token == "" {
-			challengeUnauthorized(w, prmURL, "missing bearer token")
-			return
-		}
-		v, err := validate(token)
-		if err != nil {
-			challengeUnauthorized(w, prmURL, "invalid or expired token")
-			return
-		}
-		next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), *v)))
-	})
-}
-
-// challengeUnauthorized writes the 401 + WWW-Authenticate that bootstraps
-// discovery, pointing the client at prmURL for the protected-resource metadata.
-func challengeUnauthorized(w http.ResponseWriter, prmURL, desc string) {
-	w.Header().Set("WWW-Authenticate",
-		fmt.Sprintf("Bearer resource_metadata=%q", prmURL))
-	writeOAuthError(w, http.StatusUnauthorized, "invalid_token", desc)
-}
-
 // prmURL is the Protected Resource Metadata URL advertised in the 401 challenge —
 // path-suffixed (per RFC 9728) when the resource carries a path.
 func (s *Server) prmURL() string {
 	return protectedResourceMetadataURL(s.publicURL, s.resource)
-}
-
-// resourceSuffix is the path of resource under base — e.g. "/mcp" — or "" when
-// resource is the bare host (or base itself). Used both to mount the suffixed
-// metadata route and to build the metadata URL, so the two agree.
-func resourceSuffix(base, resource string) string {
-	if p := strings.TrimPrefix(resource, base); p != "/" {
-		return p
-	}
-	return ""
-}
-
-// protectedResourceMetadataURL builds the RFC 9728 metadata URL for a resource
-// under base: base + the well-known path + the resource's path suffix. It is
-// the single source for this security-relevant URL, shared by the local Server
-// and a delegate ResourceServer — the URL a delegate challenges toward is the
-// exact one the host's Server must serve, so the two cannot drift.
-func protectedResourceMetadataURL(base, resource string) string {
-	return base + ProtectedResourceMetadataPath + resourceSuffix(base, resource)
 }
