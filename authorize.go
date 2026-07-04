@@ -76,18 +76,19 @@ func (s *Server) authorizeSubmit(w http.ResponseWriter, r *http.Request, p authP
 		s.renderForm(w, client, p, "Incorrect pairing code — try again.", "")
 		return
 	}
+	step := classifyStep(r.PostForm)
 	// The initial approval POST is the pairing moment; enrollment/chooser
 	// rounds re-verify the same identity and are not re-pairings.
-	if r.PostForm.Get("enroll") != "1" && r.PostForm.Get("choose") != "1" {
+	if step == stepInitialApproval {
 		s.event(Event{Type: EventPaired, Principal: principal.Name, Client: client.Name,
 			Resource: s.eventResource(p), Via: identityVia(r)})
 	}
 
-	if s.divertToEnrollment(w, r, client, p, principal) {
+	if s.divertToEnrollment(w, r, client, p, principal, step) {
 		return
 	}
 
-	principal, handled := s.resolveSetBindings(w, r, client, p, principal)
+	principal, handled := s.resolveSetBindings(w, r, client, p, principal, step)
 	if handled {
 		return
 	}
@@ -143,7 +144,7 @@ func (s *Server) sessionName(r *http.Request) string {
 // response, in which case the caller returns. Enrollment applies only to named
 // principals — the anonymous operator acts with the CLI's own credentials and
 // has no binding to write.
-func (s *Server) divertToEnrollment(w http.ResponseWriter, r *http.Request, client Client, p authParams, principal PrincipalGrant) bool {
+func (s *Server) divertToEnrollment(w http.ResponseWriter, r *http.Request, client Client, p authParams, principal PrincipalGrant, step authorizeStep) bool {
 	e := s.enrollmentFor(p)
 	if e == nil || principal.Name == "" {
 		return false
@@ -154,8 +155,12 @@ func (s *Server) divertToEnrollment(w http.ResponseWriter, r *http.Request, clie
 		pairingCode: r.PostForm.Get("pairing_code"),
 		e:           e,
 	}
-	if r.PostForm.Get("enroll") == "1" {
-		f.submit()
+	switch step {
+	case stepEnrollFields:
+		f.submitFields()
+		return true
+	case stepEnrollChoice:
+		f.submitChoice()
 		return true
 	}
 	// Unbound means unbound FOR THIS RESOURCE: in host mode a principal with
@@ -174,12 +179,12 @@ func (s *Server) divertToEnrollment(w http.ResponseWriter, r *http.Request, clie
 // select an unoffered value. It returns the grant to issue — resolved to
 // singletons when a valid choice was made — and whether it wrote a response
 // (the chooser page or a re-prompt), in which case the caller returns.
-func (s *Server) resolveSetBindings(w http.ResponseWriter, r *http.Request, client Client, p authParams, principal PrincipalGrant) (PrincipalGrant, bool) {
+func (s *Server) resolveSetBindings(w http.ResponseWriter, r *http.Request, client Client, p authParams, principal PrincipalGrant, step authorizeStep) (PrincipalGrant, bool) {
 	if principal.Name == "" || len(setValuedKeys(principal.Binding)) == 0 {
 		return principal, false
 	}
 	pairingCode := r.PostForm.Get("pairing_code")
-	if r.PostForm.Get("choose") != "1" {
+	if step != stepBindingChoice {
 		s.renderBindingChooser(w, client, p, pairingCode, principal, "")
 		return principal, true
 	}

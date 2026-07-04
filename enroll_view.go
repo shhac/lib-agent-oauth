@@ -7,6 +7,7 @@ import "strings"
 // response state, mirrored read/write sides (enrollModeViews renders what
 // collectModeFields later reads back).
 
+// fieldInputName is the HTML input name for a descriptor field.
 func fieldInputName(modeKey, fieldKey string) string {
 	return "field_" + modeKey + "_" + fieldKey
 }

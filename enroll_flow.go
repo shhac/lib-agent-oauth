@@ -61,30 +61,26 @@ func (f *enrollFlow) renderPage(view enrollView) {
 	})
 }
 
-// fieldInputName is the HTML input name for a descriptor field.
-func (f *enrollFlow) submit() {
+// submittedMode resolves the mode this enrollment POST addresses — the shared
+// prelude of both rounds. ok=false means the form was already re-rendered.
+// The pairing code was already re-verified by authorizeSubmit before either
+// round is reached.
+func (f *enrollFlow) submittedMode() (CredentialMode, bool) {
 	mode, ok := f.e.mode(f.r.PostForm.Get("enroll_mode"))
 	if !ok {
 		f.renderPage(enrollView{Err: "Pick how you want to authenticate."})
+	}
+	return mode, ok
+}
+
+// submitFields processes the first enrollment round: required-field check,
+// callback with the submitted values, then finish (persist or divert to a
+// choice round).
+func (f *enrollFlow) submitFields() {
+	mode, ok := f.submittedMode()
+	if !ok {
 		return
 	}
-
-	if f.r.PostForm.Get("enroll_choice_round") == "1" {
-		choice := f.r.PostForm.Get("enroll_choice")
-		if choice == "" {
-			f.renderPage(enrollView{Mode: mode.Key, Err: "No option was selected — start again."})
-			return
-		}
-		res, err := f.e.Enroll(f.r.Context(), EnrollRequest{
-			Principal: f.principal.Name,
-			Mode:      mode.Key,
-			Choice:    choice,
-			State:     f.r.PostForm.Get("enroll_state"),
-		})
-		f.finish(mode.Key, res, err, enrollView{Mode: mode.Key})
-		return
-	}
-
 	values, nonSecret, missing := collectModeFields(mode, f.r.PostForm.Get)
 	view := enrollView{Mode: mode.Key, Values: nonSecret}
 	if len(missing) > 0 {
@@ -99,6 +95,28 @@ func (f *enrollFlow) submit() {
 		Values:    values,
 	})
 	f.finish(mode.Key, res, err, view)
+}
+
+// submitChoice processes the follow-up round after an EnrollResult.Choice:
+// the selection (plus the callback's opaque State) rides instead of field
+// values — the callback already holds whatever it needs from the first round.
+func (f *enrollFlow) submitChoice() {
+	mode, ok := f.submittedMode()
+	if !ok {
+		return
+	}
+	choice := f.r.PostForm.Get("enroll_choice")
+	if choice == "" {
+		f.renderPage(enrollView{Mode: mode.Key, Err: "No option was selected — start again."})
+		return
+	}
+	res, err := f.e.Enroll(f.r.Context(), EnrollRequest{
+		Principal: f.principal.Name,
+		Mode:      mode.Key,
+		Choice:    choice,
+		State:     f.r.PostForm.Get("enroll_state"),
+	})
+	f.finish(mode.Key, res, err, enrollView{Mode: mode.Key})
 }
 
 // finish routes an EnrollResult: error → re-render the form (secrets
