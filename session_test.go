@@ -265,6 +265,64 @@ func TestSessionExpiryAndCodePrecedence(t *testing.T) {
 	}
 }
 
+// The anonymous operator (shared pairing code) gets a session too: the record
+// is marked Anonymous — Name == "" is not enough to tell "anonymous" from
+// "absent" — the next tool greets "operator", and its token carries the zero
+// grant.
+func TestSessionAnonymousOperator(t *testing.T) {
+	h := sessionHarness(t)
+	shared, err := h.srv.PairingCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientID := h.registerClient(t)
+
+	// Login once with the SHARED operator code at the lin mount.
+	form := authForm(clientID, shared)
+	form.Set("resource", maLin)
+	resp := h.postForm(t, AuthorizePath, form)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("operator authorize = %d, want 302", resp.StatusCode)
+	}
+	session := sessionCookieFrom(t, resp)
+	if session == "" {
+		t.Fatal("no session cookie after the operator's code-entered flow")
+	}
+
+	// The next tool recognizes the anonymous operator by session — greeted as
+	// "operator", no code demanded.
+	getReq, _ := http.NewRequest(http.MethodGet, h.url(AuthorizePath)+"?"+authForm(clientID, "").Encode()+"&resource="+url.QueryEscape(maLin), nil)
+	getReq.Header.Set("Cookie", sessionCookie+"="+session)
+	getResp, err := h.client.Do(getReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := readAll(t, getResp)
+	if getResp.StatusCode != http.StatusOK || !strings.Contains(page, "recognized as <b>operator</b>") {
+		t.Errorf("operator session GET: status=%d, want recognized-as-operator; body: %.200s", getResp.StatusCode, page)
+	}
+
+	// A code-less POST rides the session and issues the anonymous grant's token.
+	form = authForm(clientID, "")
+	form.Set("resource", maLin)
+	resp = h.postAuthorizeCookie(t, form, session)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("operator session POST = %d, want 302", resp.StatusCode)
+	}
+	loc, _ := url.Parse(resp.Header.Get("Location"))
+	tokens := h.exchange(t, clientID, loc.Query().Get("code"))
+	verifier, _ := NewEd25519Verifier(maHost, maLin, h.srv.PublicKey())
+	v, err := verifier.Validate(tokens["access_token"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Name != "" {
+		t.Errorf("anonymous-operator session token = %+v, want the zero-name grant", v.PrincipalGrant)
+	}
+}
+
 func readAll(t *testing.T, resp *http.Response) string {
 	t.Helper()
 	defer resp.Body.Close()
