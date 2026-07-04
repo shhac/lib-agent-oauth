@@ -124,7 +124,7 @@ func (s *Server) sessionPrincipal(r *http.Request) (PrincipalGrant, bool, error)
 // by ENTERING a code — a session-resumed flow doesn't re-issue. No-op unless
 // sessions are enabled.
 func (s *Server) maybeStartSession(w http.ResponseWriter, r *http.Request, p PrincipalGrant) {
-	if s.sessions == nil || r.PostForm.Get("pairing_code") == "" {
+	if s.sessions == nil || !codeEntered(r) {
 		return
 	}
 	token, err := s.sessions.issue(p)

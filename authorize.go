@@ -106,10 +106,18 @@ func (s *Server) verifyIdentity(r *http.Request) (PrincipalGrant, bool, error) {
 	return s.sessionPrincipal(r)
 }
 
-// identityVia labels how this request proved identity, mirroring
-// verifyIdentity's precedence — for events only, never a gate.
+// codeEntered is THE definition of "this request proved identity by entering
+// a pairing code" — verifyIdentity's precedence, the paired/authorized
+// events' via label, and maybeStartSession's issue-only-on-code guard all
+// derive from it, so they can never disagree.
+func codeEntered(r *http.Request) bool {
+	return r.PostForm.Get("pairing_code") != ""
+}
+
+// identityVia labels how this request proved identity — for events only,
+// never a gate.
 func identityVia(r *http.Request) string {
-	if r.PostForm.Get("pairing_code") != "" {
+	if codeEntered(r) {
 		return "code"
 	}
 	return "session"

@@ -82,8 +82,12 @@ func sessionCookieFrom(t *testing.T, resp *http.Response) string {
 	t.Helper()
 	for _, c := range resp.Cookies() {
 		if c.Name == sessionCookie {
-			if !c.HttpOnly || !c.Secure || c.Path != "/" {
-				t.Errorf("session cookie attributes: HttpOnly=%v Secure=%v Path=%q", c.HttpOnly, c.Secure, c.Path)
+			// The full cookie contract: __Host- semantics (Secure, Path=/, no
+			// Domain), HttpOnly, SameSite=Lax, and a positive lifetime.
+			if !c.HttpOnly || !c.Secure || c.Path != "/" || c.Domain != "" ||
+				c.SameSite != http.SameSiteLaxMode || c.MaxAge <= 0 {
+				t.Errorf("session cookie attributes: HttpOnly=%v Secure=%v Path=%q Domain=%q SameSite=%v MaxAge=%d",
+					c.HttpOnly, c.Secure, c.Path, c.Domain, c.SameSite, c.MaxAge)
 			}
 			return c.Value
 		}
@@ -315,4 +319,45 @@ func readAll(t *testing.T, resp *http.Response) string {
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	return string(b)
+}
+
+// A session stores only the NAME: a binding updated after the session was
+// minted rides the next session-resumed flow — re-resolved per use, never
+// frozen at login time.
+func TestSessionPicksUpFreshBinding(t *testing.T) {
+	h := sessionHarness(t)
+	aliceCode, err := h.srv.pairing.AddPrincipal("alice", map[string]string{"lin:workspace": "old-org"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientID := h.registerClient(t)
+
+	form := authForm(clientID, aliceCode)
+	form.Set("resource", maLin)
+	resp := h.postForm(t, AuthorizePath, form)
+	resp.Body.Close()
+	session := sessionCookieFrom(t, resp)
+
+	// The operator re-binds alice after her session exists.
+	if _, err := h.srv.pairing.SetPrincipalBinding("alice", map[string]string{"lin:workspace": "new-org"}); err != nil {
+		t.Fatal(err)
+	}
+
+	form = authForm(clientID, "")
+	form.Set("resource", maLin)
+	resp = h.postAuthorizeCookie(t, form, session)
+	resp.Body.Close()
+	loc, _ := url.Parse(resp.Header.Get("Location"))
+	tokens := h.exchange(t, clientID, loc.Query().Get("code"))
+	verifier, err := NewEd25519Verifier(maHost, maLin, h.srv.PublicKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := verifier.Validate(tokens["access_token"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Binding["workspace"] != "new-org" {
+		t.Errorf("session-resumed token binding = %v, want the FRESH new-org", v.Binding)
+	}
 }
