@@ -131,6 +131,7 @@ func (s *Server) maybeStartSession(w http.ResponseWriter, r *http.Request, p Pri
 	if err != nil {
 		return // the flow still completes; the next tool just asks for the code again
 	}
+	s.event(Event{Type: EventSessionStarted, Principal: p.Name})
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    token,

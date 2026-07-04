@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 )
 
@@ -186,19 +185,7 @@ func maBindingHarness(t *testing.T) (*oauthHarness, string) {
 		Resources:  []string{maSlack},
 		Asymmetric: true,
 		BindingForResource: func(binding map[string]string, _ string) map[string]string {
-			out := map[string]string{}
-			for k, v := range binding {
-				switch {
-				case strings.HasPrefix(k, "slack:"):
-					out[strings.TrimPrefix(k, "slack:")] = v
-				case !strings.Contains(k, ":"):
-					out[k] = v
-				}
-			}
-			if len(out) == 0 {
-				return nil
-			}
-			return out
+			return stripPrefixBinding(binding, "slack")
 		},
 	})
 	if err != nil {

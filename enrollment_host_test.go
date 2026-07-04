@@ -45,20 +45,7 @@ func hostEnrollHarness(t *testing.T, got *EnrollRequest) *oauthHarness {
 		Resources:  []string{maSlack, maLin},
 		Asymmetric: true,
 		BindingForResource: func(binding map[string]string, resource string) map[string]string {
-			prefix := mountOf[resource] + ":"
-			out := map[string]string{}
-			for k, v := range binding {
-				switch {
-				case strings.HasPrefix(k, prefix):
-					out[strings.TrimPrefix(k, prefix)] = v
-				case !strings.Contains(k, ":"):
-					out[k] = v
-				}
-			}
-			if len(out) == 0 {
-				return nil
-			}
-			return out
+			return stripPrefixBinding(binding, mountOf[resource])
 		},
 		EnrollmentForResource: func(resource string) *Enrollment {
 			if resource == maSlack {

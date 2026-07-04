@@ -146,10 +146,10 @@ func TestResourceServerProtect(t *testing.T) {
 func TestNewResourceServerValidatesConfig(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(nil)
 	cases := map[string]RSConfig{
-		"no issuer":            {Resource: slackAud, VerifyKey: pub},
-		"no resource":          {IssuerURL: hostURL, VerifyKey: pub},
+		"no issuer":               {Resource: slackAud, VerifyKey: pub},
+		"no resource":             {IssuerURL: hostURL, VerifyKey: pub},
 		"resource not under host": {IssuerURL: hostURL, Resource: "https://other.example/mcp", VerifyKey: pub},
-		"bad key":              {IssuerURL: hostURL, Resource: slackAud, VerifyKey: ed25519.PublicKey("short")},
+		"bad key":                 {IssuerURL: hostURL, Resource: slackAud, VerifyKey: ed25519.PublicKey("short")},
 	}
 	for name, cfg := range cases {
 		if _, err := NewResourceServer(cfg); err == nil {

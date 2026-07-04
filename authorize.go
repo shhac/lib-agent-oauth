@@ -76,6 +76,12 @@ func (s *Server) authorizeSubmit(w http.ResponseWriter, r *http.Request, p authP
 		s.renderForm(w, client, p, "Incorrect pairing code — try again.", "")
 		return
 	}
+	// The initial approval POST is the pairing moment; enrollment/chooser
+	// rounds re-verify the same identity and are not re-pairings.
+	if r.PostForm.Get("enroll") != "1" && r.PostForm.Get("choose") != "1" {
+		s.event(Event{Type: EventPaired, Principal: principal.Name, Client: client.Name,
+			Resource: s.eventResource(p), Via: identityVia(r)})
+	}
 
 	if s.divertToEnrollment(w, r, client, p, principal) {
 		return
@@ -98,6 +104,15 @@ func (s *Server) verifyIdentity(r *http.Request) (PrincipalGrant, bool, error) {
 		return s.pairing.VerifyPrincipal(code)
 	}
 	return s.sessionPrincipal(r)
+}
+
+// identityVia labels how this request proved identity, mirroring
+// verifyIdentity's precedence — for events only, never a gate.
+func identityVia(r *http.Request) string {
+	if r.PostForm.Get("pairing_code") != "" {
+		return "code"
+	}
+	return "session"
 }
 
 // sessionName is the label the form greets a session-recognized person with —
@@ -178,6 +193,8 @@ func (s *Server) resolveSetBindings(w http.ResponseWriter, r *http.Request, clie
 func (s *Server) issueAndRedirect(w http.ResponseWriter, r *http.Request, client Client, p authParams, principal PrincipalGrant) {
 	s.maybeStartSession(w, r, principal)
 	resource, _ := s.resolveResource(p.resource) // validated in validatedRequest
+	s.event(Event{Type: EventAuthorized, Principal: principal.Name, Client: client.Name,
+		Resource: resource, Via: identityVia(r)})
 	code, err := s.codes.issue(authGrant{
 		ClientID:            client.ID,
 		RedirectURI:         p.redirectURI,

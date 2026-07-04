@@ -81,6 +81,10 @@ type Config struct {
 	// exactly as a single-tool token does. Nil passes the binding through
 	// unchanged (single-tool mode).
 	BindingForResource func(binding map[string]string, resource string) map[string]string
+	// OnEvent, when set, receives non-secret AS lifecycle events (see Event) —
+	// the host's operator-facing activity stream. Called synchronously on the
+	// request path: keep it fast, never block.
+	OnEvent func(Event)
 }
 
 // Server is the self-contained local OAuth Authorization Server and Resource
@@ -101,6 +105,7 @@ type Server struct {
 
 	enrollmentForResource func(string) *Enrollment
 	bindingForResource    func(map[string]string, string) map[string]string
+	onEvent               func(Event)
 }
 
 // enrollmentFor resolves which enrollment (if any) applies to an authorize
@@ -199,6 +204,7 @@ func New(cfg Config) (*Server, error) {
 
 		enrollmentForResource: cfg.EnrollmentForResource,
 		bindingForResource:    cfg.BindingForResource,
+		onEvent:               cfg.OnEvent,
 	}, nil
 }
 

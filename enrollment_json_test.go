@@ -93,4 +93,3 @@ func TestEnrollRequestResultJSONRoundTrip(t *testing.T) {
 		t.Errorf("choice result round-trip: %+v", choiceOut.Choice)
 	}
 }
-

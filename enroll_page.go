@@ -208,6 +208,8 @@ func (f *enrollFlow) finish(modeKey string, res EnrollResult, err error, view en
 		f.s.authorizeErrorPage(f.w, "internal error storing the credential binding")
 		return
 	}
+	f.s.event(Event{Type: EventEnrolled, Principal: f.principal.Name, Client: f.client.Name,
+		Resource: f.s.eventResource(f.p)})
 	// The FRESH merged grant, deliberately not f.principal: the carried
 	// principal still holds the pre-enrollment (possibly empty) binding.
 	f.s.issueAndRedirect(f.w, f.r, f.client, f.p, PrincipalGrant{Name: f.principal.Name, Binding: merged})

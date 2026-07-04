@@ -71,9 +71,9 @@ func TestEnrollmentDescriptorValidation(t *testing.T) {
 	enroll := func(context.Context, EnrollRequest) (EnrollResult, error) { return EnrollResult{}, nil }
 	bad := []*Enrollment{
 		{Descriptor: CredentialDescriptor{Modes: []CredentialMode{{Key: "a", Fields: []CredentialField{{Key: "x"}}}}}}, // nil callback
-		{Enroll: enroll},                                            // no modes
-		{Enroll: enroll, Descriptor: CredentialDescriptor{Modes: []CredentialMode{{Key: "a"}}}},                        // no fields
-		{Enroll: enroll, Descriptor: CredentialDescriptor{Modes: []CredentialMode{{Fields: []CredentialField{{Key: "x"}}}}}}, // empty mode key
+		{Enroll: enroll}, // no modes
+		{Enroll: enroll, Descriptor: CredentialDescriptor{Modes: []CredentialMode{{Key: "a"}}}},                                       // no fields
+		{Enroll: enroll, Descriptor: CredentialDescriptor{Modes: []CredentialMode{{Fields: []CredentialField{{Key: "x"}}}}}},          // empty mode key
 		{Enroll: enroll, Descriptor: CredentialDescriptor{Modes: []CredentialMode{{Key: "a", Fields: []CredentialField{{Key: ""}}}}}}, // empty field key
 		{Enroll: enroll, Descriptor: CredentialDescriptor{Modes: []CredentialMode{
 			{Key: "a", Fields: []CredentialField{{Key: "x"}}}, {Key: "a", Fields: []CredentialField{{Key: "x"}}}}}}, // dup mode

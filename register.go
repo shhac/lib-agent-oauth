@@ -43,6 +43,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not register client")
 		return
 	}
+	s.event(Event{Type: EventClientRegistered, Client: c.Name})
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"client_id":                  c.ID,
 		"redirect_uris":              c.RedirectURIs,
