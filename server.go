@@ -60,6 +60,13 @@ type Config struct {
 	// its tokens with only the public key. The multi-tool host sets this;
 	// single-tool `--oauth local` leaves it false (self-signed, self-validated).
 	Asymmetric bool
+	// BindingForResource, when set, transforms a principal's stored binding
+	// into the binding a token for `resource` should carry. The multi-tool host
+	// uses it to project a namespaced binding (slack:workspace=acme) down to the
+	// vocabulary the mount understands (workspace=acme) — the token then reads
+	// exactly as a single-tool token does. Nil passes the binding through
+	// unchanged (single-tool mode).
+	BindingForResource func(binding map[string]string, resource string) map[string]string
 }
 
 // Server is the self-contained local OAuth Authorization Server and Resource
@@ -76,6 +83,8 @@ type Server struct {
 	clients   *clientRegistry
 	refresh   *refreshStore
 	enrollment *Enrollment
+
+	bindingForResource func(map[string]string, string) map[string]string
 }
 
 // New validates cfg and builds the server, loading or generating its signing key
@@ -138,6 +147,8 @@ func New(cfg Config) (*Server, error) {
 		clients:    newClientRegistry(cfg.Store),
 		refresh:    newRefreshStore(cfg.Store),
 		enrollment: cfg.Enrollment,
+
+		bindingForResource: cfg.BindingForResource,
 	}, nil
 }
 

@@ -60,13 +60,21 @@ func (s *Server) grantRefresh(w http.ResponseWriter, r *http.Request) {
 }
 
 // issueTokens mints an access token (+ a rotating refresh token) bound to the
-// given resource audience, and writes the RFC 6749 token response. An empty
-// resource falls back to the server's default audience (single-resource mode).
+// given resource audience, and writes the RFC 6749 token response. resource is
+// always a concrete, pre-validated audience: both callers pass a stored grant's
+// Resource, itself set from resolveResource (which resolves empty to the default
+// before the grant is persisted).
 func (s *Server) issueTokens(w http.ResponseWriter, clientID, scope, resource string, p PrincipalGrant) {
-	if resource == "" {
-		resource = s.resource
+	// Project the stored binding into the vocabulary this resource's tool
+	// understands (e.g. strip a "slack:" namespace) before it rides in the
+	// access token. The refresh token stores the ORIGINAL principal (below), so
+	// a refresh re-projects from scratch rather than re-projecting an
+	// already-projected binding.
+	tokenGrant := p
+	if s.bindingForResource != nil {
+		tokenGrant = PrincipalGrant{Name: p.Name, Binding: s.bindingForResource(p.Binding, resource)}
 	}
-	access, ttl, err := s.issuer.MintFor(clientID, scope, resource, p)
+	access, ttl, err := s.issuer.MintFor(clientID, scope, resource, tokenGrant)
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not issue access token")
 		return

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -165,5 +166,95 @@ func TestMultiAudienceRefreshKeepsResource(t *testing.T) {
 	tok, _ := refreshed["access_token"].(string)
 	if _, err := slackRS.verifier.Validate(tok); err != nil {
 		t.Errorf("refreshed token lost its slack audience: %v", err)
+	}
+}
+
+// maBindingHarness is a single-mount host AS whose BindingForResource strips the
+// "slack:" namespace (mirroring the host's stripNamespace), seeded with a named
+// principal carrying a namespaced binding. Returns the harness and the
+// principal's pairing code.
+func maBindingHarness(t *testing.T) (*oauthHarness, string) {
+	t.Helper()
+	store := NewMemStore()
+	aliceCode, err := NewPairing(store).AddPrincipal("alice", map[string]string{"slack:workspace": "acme"})
+	if err != nil {
+		t.Fatalf("AddPrincipal: %v", err)
+	}
+	srv, err := New(Config{
+		Store:      store,
+		PublicURL:  maHost,
+		Resources:  []string{maSlack},
+		Asymmetric: true,
+		BindingForResource: func(binding map[string]string, _ string) map[string]string {
+			out := map[string]string{}
+			for k, v := range binding {
+				switch {
+				case strings.HasPrefix(k, "slack:"):
+					out[strings.TrimPrefix(k, "slack:")] = v
+				case !strings.Contains(k, ":"):
+					out[k] = v
+				}
+			}
+			if len(out) == 0 {
+				return nil
+			}
+			return out
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return &oauthHarness{srv: srv, http: ts, client: client}, aliceCode
+}
+
+// A refreshed token RE-PROJECTS the stored binding: the refresh token carries
+// the original namespaced binding, so BindingForResource re-applies on every
+// mint. Both the first and the refreshed access token read workspace=acme —
+// never the namespaced slack:workspace, and never a doubly-stripped value.
+func TestMultiAudienceRefreshReprojectsBinding(t *testing.T) {
+	h, aliceCode := maBindingHarness(t)
+	verifier, err := NewEd25519Verifier(maHost, maSlack, h.srv.PublicKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientID := h.registerClient(t)
+
+	code := h.authorizeFor(t, clientID, aliceCode, maSlack).Query().Get("code")
+	tokens := h.exchange(t, clientID, code)
+	access, _ := tokens["access_token"].(string)
+	refreshTok, _ := tokens["refresh_token"].(string)
+
+	// The initial access token carries the projected binding.
+	v, err := verifier.Validate(access)
+	if err != nil {
+		t.Fatalf("validate initial token: %v", err)
+	}
+	if v.Binding["workspace"] != "acme" || v.Binding["slack:workspace"] != "" {
+		t.Errorf("initial binding not projected (want workspace=acme, no namespace): %v", v.Binding)
+	}
+
+	// Refresh, then the refreshed access token still carries the projected binding.
+	resp := h.postForm(t, TokenPath, url.Values{
+		"grant_type": {"refresh_token"}, "refresh_token": {refreshTok}, "client_id": {clientID}})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("refresh status = %d", resp.StatusCode)
+	}
+	var refreshed map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&refreshed); err != nil {
+		t.Fatal(err)
+	}
+	refreshedAccess, _ := refreshed["access_token"].(string)
+	rv, err := verifier.Validate(refreshedAccess)
+	if err != nil {
+		t.Fatalf("validate refreshed token: %v", err)
+	}
+	if rv.Binding["workspace"] != "acme" || rv.Binding["slack:workspace"] != "" {
+		t.Errorf("refreshed binding not re-projected (want workspace=acme, no namespace): %v", rv.Binding)
 	}
 }
