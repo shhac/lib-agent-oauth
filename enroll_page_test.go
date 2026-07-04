@@ -57,3 +57,41 @@ func TestCollectModeFieldsMissingCoverage(t *testing.T) {
 		t.Errorf("all required satisfied: missing = %v, want none", missing)
 	}
 }
+
+// enrollModeViews is the render-side mirror of collectModeFields: it namespaces
+// input names per mode, marks the selected mode open, and re-echoes only
+// non-secret values.
+func TestEnrollModeViews(t *testing.T) {
+	d := CredentialDescriptor{
+		Modes: []CredentialMode{
+			{Key: "token", Label: "API token", Fields: []CredentialField{
+				{Key: "api_key", Label: "API key", Secret: true},
+				{Key: "region", Label: "Region"},
+			}},
+			{Key: "oauth", Label: "OAuth", Fields: []CredentialField{{Key: "code", Label: "Code"}}},
+		},
+	}
+	// A prior submission's non-secret value for region, plus a secret that must
+	// NOT be re-echoed even if present.
+	values := map[string]string{"region": "eu", "api_key": "sk-should-not-echo"}
+
+	modes := enrollModeViews(d, "oauth", values)
+	if len(modes) != 2 {
+		t.Fatalf("got %d modes, want 2", len(modes))
+	}
+	// The selected mode is the one marked open.
+	if modes[0].Selected || !modes[1].Selected {
+		t.Errorf("selected wrong: token.Selected=%v oauth.Selected=%v", modes[0].Selected, modes[1].Selected)
+	}
+	// Input names are namespaced per mode.
+	if modes[0].Fields[0].Name != fieldInputName("token", "api_key") {
+		t.Errorf("field name = %q", modes[0].Fields[0].Name)
+	}
+	// Non-secret value is re-echoed; secret value is never carried into the view.
+	if modes[0].Fields[1].Value != "eu" {
+		t.Errorf("region value = %q, want eu", modes[0].Fields[1].Value)
+	}
+	if modes[0].Fields[0].Value != "" {
+		t.Errorf("secret value re-echoed: %q", modes[0].Fields[0].Value)
+	}
+}

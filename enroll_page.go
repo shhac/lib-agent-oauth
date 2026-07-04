@@ -22,48 +22,39 @@ type enrollView struct {
 	Values map[string]string
 }
 
-// renderEnrollPage shows the descriptor-driven enrollment form for e — the
-// enrollment divertToEnrollment resolved for this request's resource.
-func (s *Server) renderEnrollPage(w http.ResponseWriter, client Client, p authParams, pairingCode string, principal PrincipalGrant, view enrollView, e *Enrollment) {
-	d := e.Descriptor
+// enrollFlow carries the request-scoped invariants of one enrollment
+// interaction — the values that never change between the form, the callback
+// rounds, and the finish — so the flow's methods take only what actually
+// varies (view, mode, result). Built once in divertToEnrollment.
+type enrollFlow struct {
+	s           *Server
+	w           http.ResponseWriter
+	r           *http.Request
+	client      Client
+	p           authParams
+	principal   PrincipalGrant
+	pairingCode string
+	e           *Enrollment
+}
+
+// renderPage shows the descriptor-driven enrollment form.
+func (f *enrollFlow) renderPage(view enrollView) {
+	d := f.e.Descriptor
 	selected := view.Mode
 	if selected == "" {
 		selected = d.Modes[0].Key
 	}
-	type fieldView struct {
-		Name, Label, Help, Snippet, Value string
-		Secret, Optional                  bool
-	}
-	type modeView struct {
-		Key, Label string
-		Selected   bool
-		Fields     []fieldView
-	}
-	modes := make([]modeView, 0, len(d.Modes))
-	for _, m := range d.Modes {
-		mv := modeView{Key: m.Key, Label: m.Label, Selected: m.Key == selected}
-		for _, f := range m.Fields {
-			// Input names are namespaced per mode: with several modes on one
-			// page, un-namespaced keys shared between modes (both having
-			// "password") would shadow each other in the POST.
-			fv := fieldView{Name: fieldInputName(m.Key, f.Key), Label: f.Label, Help: f.Help, Snippet: f.Snippet, Secret: f.Secret, Optional: f.Optional}
-			if !f.Secret {
-				fv.Value = view.Values[f.Key]
-			}
-			mv.Fields = append(mv.Fields, fv)
-		}
-		modes = append(modes, mv)
-	}
+	modes := enrollModeViews(d, selected, view.Values)
 
-	hidden := p.hiddenFieldsWithCode(pairingCode)
+	hidden := f.p.hiddenFieldsWithCode(f.pairingCode)
 	hidden["enroll"] = "1"
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = enrollTmpl.Execute(w, map[string]any{
+	f.w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = enrollTmpl.Execute(f.w, map[string]any{
 		"Action":     AuthorizePath,
 		"Title":      d.Title,
 		"Intro":      d.Intro,
-		"Principal":  principal.Name,
-		"ClientName": client.Name,
+		"Principal":  f.principal.Name,
+		"ClientName": f.client.Name,
 		"Error":      view.Err,
 		"SingleMode": len(modes) == 1,
 		"Modes":      modes,
@@ -74,6 +65,43 @@ func (s *Server) renderEnrollPage(w http.ResponseWriter, client Client, p authPa
 // fieldInputName is the HTML input name for a descriptor field.
 func fieldInputName(modeKey, fieldKey string) string {
 	return "field_" + modeKey + "_" + fieldKey
+}
+
+// enrollFieldView is one rendered enrollment input: descriptor data plus the
+// per-mode namespaced input name and any re-echoed (non-secret) value.
+type enrollFieldView struct {
+	Name, Label, Help, Snippet, Value string
+	Secret, Optional                  bool
+}
+
+// enrollModeView is one rendered authentication mode: its fields plus whether
+// it is the selected (open) mode.
+type enrollModeView struct {
+	Key, Label string
+	Selected   bool
+	Fields     []enrollFieldView
+}
+
+// enrollModeViews builds the per-mode view data the enrollment template renders
+// from a descriptor: field input names are namespaced per mode (so a key shared
+// across modes doesn't shadow itself in the POST), non-secret values are
+// re-echoed from a prior submission, and the mode matching selected is marked
+// open. Pure — no request/response state — the render-side mirror of
+// collectModeFields.
+func enrollModeViews(d CredentialDescriptor, selected string, values map[string]string) []enrollModeView {
+	modes := make([]enrollModeView, 0, len(d.Modes))
+	for _, m := range d.Modes {
+		mv := enrollModeView{Key: m.Key, Label: m.Label, Selected: m.Key == selected}
+		for _, f := range m.Fields {
+			fv := enrollFieldView{Name: fieldInputName(m.Key, f.Key), Label: f.Label, Help: f.Help, Snippet: f.Snippet, Secret: f.Secret, Optional: f.Optional}
+			if !f.Secret {
+				fv.Value = values[f.Key]
+			}
+			mv.Fields = append(mv.Fields, fv)
+		}
+		modes = append(modes, mv)
+	}
+	return modes
 }
 
 // collectModeFields reads one mode's submitted fields (via get, over the
@@ -97,54 +125,52 @@ func collectModeFields(mode CredentialMode, get func(name string) string) (value
 	return values, nonSecret, missing
 }
 
-// enrollSubmit processes the enrollment POST: required-field check, callback,
+// submit processes the enrollment POST: required-field check, callback,
 // binding persistence, then the standard code issue + redirect. The pairing
 // code was already re-verified by authorizeSubmit before this is reached.
 // A follow-up POST after an EnrollResult.Choice carries the selection instead
 // of field values — the callback already holds (or encoded in State) whatever
 // it needs from the first round.
-func (s *Server) enrollSubmit(w http.ResponseWriter, r *http.Request, client Client, p authParams, principal PrincipalGrant, e *Enrollment) {
-	pairingCode := r.PostForm.Get("pairing_code")
-	mode, ok := e.mode(r.PostForm.Get("enroll_mode"))
+func (f *enrollFlow) submit() {
+	mode, ok := f.e.mode(f.r.PostForm.Get("enroll_mode"))
 	if !ok {
-		s.renderEnrollPage(w, client, p, pairingCode, principal, enrollView{Err: "Pick how you want to authenticate."}, e)
+		f.renderPage(enrollView{Err: "Pick how you want to authenticate."})
 		return
 	}
 
-	if r.PostForm.Get("enroll_choice_round") == "1" {
-		choice := r.PostForm.Get("enroll_choice")
+	if f.r.PostForm.Get("enroll_choice_round") == "1" {
+		choice := f.r.PostForm.Get("enroll_choice")
 		if choice == "" {
-			s.renderEnrollPage(w, client, p, pairingCode, principal,
-				enrollView{Mode: mode.Key, Err: "No option was selected — start again."}, e)
+			f.renderPage(enrollView{Mode: mode.Key, Err: "No option was selected — start again."})
 			return
 		}
-		res, err := e.Enroll(r.Context(), EnrollRequest{
-			Principal: principal.Name,
+		res, err := f.e.Enroll(f.r.Context(), EnrollRequest{
+			Principal: f.principal.Name,
 			Mode:      mode.Key,
 			Choice:    choice,
-			State:     r.PostForm.Get("enroll_state"),
+			State:     f.r.PostForm.Get("enroll_state"),
 		})
-		s.finishEnroll(w, r, client, p, pairingCode, principal, mode.Key, res, err, enrollView{Mode: mode.Key}, e)
+		f.finish(mode.Key, res, err, enrollView{Mode: mode.Key})
 		return
 	}
 
-	values, nonSecret, missing := collectModeFields(mode, r.PostForm.Get)
+	values, nonSecret, missing := collectModeFields(mode, f.r.PostForm.Get)
 	view := enrollView{Mode: mode.Key, Values: nonSecret}
 	if len(missing) > 0 {
 		view.Err = "Required: " + strings.Join(missing, ", ")
-		s.renderEnrollPage(w, client, p, pairingCode, principal, view, e)
+		f.renderPage(view)
 		return
 	}
 
-	res, err := e.Enroll(r.Context(), EnrollRequest{
-		Principal: principal.Name,
+	res, err := f.e.Enroll(f.r.Context(), EnrollRequest{
+		Principal: f.principal.Name,
 		Mode:      mode.Key,
 		Values:    values,
 	})
-	s.finishEnroll(w, r, client, p, pairingCode, principal, mode.Key, res, err, view, e)
+	f.finish(mode.Key, res, err, view)
 }
 
-// finishEnroll routes an EnrollResult: error → re-render the form (secrets
+// finish routes an EnrollResult: error → re-render the form (secrets
 // cleared); Choice → render the chooser for a follow-up round; Binding →
 // persist and finish the OAuth flow.
 //
@@ -155,34 +181,36 @@ func (s *Server) enrollSubmit(w http.ResponseWriter, r *http.Request, client Cli
 // token rather than being narrowed — the allowed-set chooser is an
 // operator-provisioning affordance (`pair add --bind k=a,b`), not an
 // enrollment one.
-func (s *Server) finishEnroll(w http.ResponseWriter, r *http.Request, client Client, p authParams, pairingCode string, principal PrincipalGrant, modeKey string, res EnrollResult, err error, view enrollView, e *Enrollment) {
+func (f *enrollFlow) finish(modeKey string, res EnrollResult, err error, view enrollView) {
 	if err != nil {
 		view.Err = err.Error()
-		s.renderEnrollPage(w, client, p, pairingCode, principal, view, e)
+		f.renderPage(view)
 		return
 	}
 	if res.Choice != nil {
 		if len(res.Choice.Options) == 0 {
-			s.authorizeErrorPage(w, "internal error: enrollment offered an empty choice")
+			f.s.authorizeErrorPage(f.w, "internal error: enrollment offered an empty choice")
 			return
 		}
-		s.renderEnrollChoice(w, client, p, pairingCode, principal, modeKey, res.Choice, "")
+		f.s.renderEnrollChoice(f.w, f.client, f.p, f.pairingCode, f.principal, modeKey, res.Choice, "")
 		return
 	}
 	if len(res.Binding) == 0 {
-		s.authorizeErrorPage(w, "internal error: enrollment returned no binding")
+		f.s.authorizeErrorPage(f.w, "internal error: enrollment returned no binding")
 		return
 	}
 	// Merge, not replace: in host mode the returned binding is one tool's
 	// namespaced slice of the principal's record — enrolling for slack must
 	// not wipe the lin keys enrolled last week. Same-key overwrite keeps
 	// single-tool re-enrollment idempotent as before.
-	merged, found, err := s.pairing.MergePrincipalBinding(principal.Name, res.Binding)
+	merged, found, err := f.s.pairing.MergePrincipalBinding(f.principal.Name, res.Binding)
 	if err != nil || !found {
-		s.authorizeErrorPage(w, "internal error storing the credential binding")
+		f.s.authorizeErrorPage(f.w, "internal error storing the credential binding")
 		return
 	}
-	s.issueAndRedirect(w, r, client, p, PrincipalGrant{Name: principal.Name, Binding: merged})
+	// The FRESH merged grant, deliberately not f.principal: the carried
+	// principal still holds the pre-enrollment (possibly empty) binding.
+	f.s.issueAndRedirect(f.w, f.r, f.client, f.p, PrincipalGrant{Name: f.principal.Name, Binding: merged})
 }
 
 var enrollTmpl = template.Must(template.New("enroll").Parse(`<!doctype html>

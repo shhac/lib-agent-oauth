@@ -117,9 +117,7 @@ func (p *Pairing) MergePrincipalBinding(name string, patch map[string]string) (m
 		if rec.Binding == nil {
 			rec.Binding = map[string]string{}
 		}
-		for k, v := range patch {
-			rec.Binding[k] = v
-		}
+		maps.Copy(rec.Binding, patch)
 		merged = rec.Binding
 	})
 	return merged, found, err

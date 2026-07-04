@@ -109,6 +109,33 @@ func TestHostEnrollmentGateIsPerResource(t *testing.T) {
 	}
 }
 
+// Already bound FOR THIS RESOURCE → no divert: enrollment is idempotent in
+// host mode. The projected binding is non-empty, so the same principal that
+// would be diverted when unbound sails straight through to the redirect.
+func TestHostEnrollmentSkipsWhenBoundForResource(t *testing.T) {
+	var got EnrollRequest
+	h := hostEnrollHarness(t, &got)
+	aliceCode, err := h.srv.pairing.AddPrincipal("alice",
+		map[string]string{"slack:workspace": "acme", "lin:workspace": "letsdothis"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientID := h.registerClient(t)
+
+	form := authForm(clientID, aliceCode)
+	form.Set("resource", maSlack)
+	status, body, loc := h.postAuthorize(t, form)
+	if status != http.StatusFound || loc == "" {
+		t.Errorf("bound-for-slack authorize: status=%d loc=%q, want 302 straight through", status, loc)
+	}
+	if strings.Contains(body, `name="enroll"`) {
+		t.Errorf("bound principal should not see the enrollment form again")
+	}
+	if got.Principal != "" {
+		t.Errorf("enrollment callback must not run for a bound principal, but saw %+v", got)
+	}
+}
+
 // Completing slack's enrollment merges into the record (lin keys survive) and
 // the issued token carries the projected slack binding.
 func TestHostEnrollmentMergesAndProjects(t *testing.T) {

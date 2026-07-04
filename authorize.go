@@ -97,15 +97,21 @@ func (s *Server) divertToEnrollment(w http.ResponseWriter, r *http.Request, clie
 	if e == nil || principal.Name == "" {
 		return false
 	}
+	f := &enrollFlow{
+		s: s, w: w, r: r,
+		client: client, p: p, principal: principal,
+		pairingCode: r.PostForm.Get("pairing_code"),
+		e:           e,
+	}
 	if r.PostForm.Get("enroll") == "1" {
-		s.enrollSubmit(w, r, client, p, principal, e)
+		f.submit()
 		return true
 	}
 	// Unbound means unbound FOR THIS RESOURCE: in host mode a principal with
 	// only another tool's namespaced keys projects to empty here and still
 	// needs to enroll for this one.
 	if len(s.projectedBinding(principal.Binding, p)) == 0 || r.PostForm.Get("update_credentials") != "" {
-		s.renderEnrollPage(w, client, p, r.PostForm.Get("pairing_code"), principal, enrollView{}, e)
+		f.renderPage(enrollView{})
 		return true
 	}
 	return false

@@ -117,15 +117,11 @@ type Enrollment struct {
 }
 
 // Validate checks the enrollment is usable: a renderable descriptor (at least
-// one mode, unique non-empty mode and field keys) and a callback. Config
-// validation calls it for Config.Enrollment; a host constructing enrollments
-// dynamically (Config.EnrollmentForResource) calls it itself, once per tool,
-// at boot.
-func (e *Enrollment) Validate() error { return e.validate() }
-
-// validate checks the descriptor is renderable: at least one mode, unique
-// non-empty mode and field keys, and a callback to hand submissions to.
-func (e *Enrollment) validate() error {
+// one mode, unique non-empty mode and field keys) and a callback to hand
+// submissions to. Config validation calls it for Config.Enrollment; a host
+// constructing enrollments dynamically (Config.EnrollmentForResource) calls it
+// itself, once per tool, at boot.
+func (e *Enrollment) Validate() error {
 	if e.Enroll == nil {
 		return fmt.Errorf("oauth: enrollment: Enroll callback is required")
 	}

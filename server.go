@@ -155,7 +155,7 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	if cfg.Enrollment != nil {
-		if err := cfg.Enrollment.validate(); err != nil {
+		if err := cfg.Enrollment.Validate(); err != nil {
 			return nil, err
 		}
 	}
