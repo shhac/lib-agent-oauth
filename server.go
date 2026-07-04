@@ -139,39 +139,64 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 // with a WWW-Authenticate pointing at the protected-resource metadata so the
 // client can start the OAuth discovery.
 func (s *Server) Protect(next http.Handler) http.Handler {
+	return protectHandler(s.issuer.Validate, s.prmURL(), next)
+}
+
+// protectHandler gates next behind a valid, validate-passing bearer token,
+// attaching the carried identity to the request context; otherwise it answers
+// the 401 discovery challenge pointing at prmURL. Shared by the local Server
+// and a delegate ResourceServer so the gate can't drift between them.
+func protectHandler(validate func(string) (*Verified, error), prmURL string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r)
 		if token == "" {
-			s.challenge(w, "missing bearer token")
+			challengeUnauthorized(w, prmURL, "missing bearer token")
 			return
 		}
-		v, err := s.issuer.Validate(token)
+		v, err := validate(token)
 		if err != nil {
-			s.challenge(w, "invalid or expired token")
+			challengeUnauthorized(w, prmURL, "invalid or expired token")
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), *v)))
 	})
 }
 
-// challenge writes the 401 + WWW-Authenticate that bootstraps discovery.
-func (s *Server) challenge(w http.ResponseWriter, desc string) {
+// challengeUnauthorized writes the 401 + WWW-Authenticate that bootstraps
+// discovery, pointing the client at prmURL for the protected-resource metadata.
+func challengeUnauthorized(w http.ResponseWriter, prmURL, desc string) {
 	w.Header().Set("WWW-Authenticate",
-		fmt.Sprintf("Bearer resource_metadata=%q", s.prmURL()))
+		fmt.Sprintf("Bearer resource_metadata=%q", prmURL))
 	writeOAuthError(w, http.StatusUnauthorized, "invalid_token", desc)
 }
 
 // resourcePath is the path component of the resource identifier (e.g. "/mcp"),
 // or "" when the resource is the bare host.
 func (s *Server) resourcePath() string {
-	if p := strings.TrimPrefix(s.resource, s.publicURL); p != "/" {
-		return p
-	}
-	return ""
+	return resourceSuffix(s.publicURL, s.resource)
 }
 
 // prmURL is the Protected Resource Metadata URL advertised in the 401 challenge —
 // path-suffixed (per RFC 9728) when the resource carries a path.
 func (s *Server) prmURL() string {
-	return s.publicURL + ProtectedResourceMetadataPath + s.resourcePath()
+	return protectedResourceMetadataURL(s.publicURL, s.resource)
+}
+
+// resourceSuffix is the path of resource under base — e.g. "/mcp" — or "" when
+// resource is the bare host (or base itself). Used both to mount the suffixed
+// metadata route and to build the metadata URL, so the two agree.
+func resourceSuffix(base, resource string) string {
+	if p := strings.TrimPrefix(resource, base); p != "/" {
+		return p
+	}
+	return ""
+}
+
+// protectedResourceMetadataURL builds the RFC 9728 metadata URL for a resource
+// under base: base + the well-known path + the resource's path suffix. It is
+// the single source for this security-relevant URL, shared by the local Server
+// and a delegate ResourceServer — the URL a delegate challenges toward is the
+// exact one the host's Server must serve, so the two cannot drift.
+func protectedResourceMetadataURL(base, resource string) string {
+	return base + ProtectedResourceMetadataPath + resourceSuffix(base, resource)
 }
