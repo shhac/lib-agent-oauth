@@ -38,7 +38,7 @@ func (s *Server) grantAuthCode(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "PKCE verification failed")
 		return
 	}
-	s.issueTokens(w, grant.ClientID, grant.Scope, grant.Principal)
+	s.issueTokens(w, grant.ClientID, grant.Scope, grant.Resource, grant.Principal)
 }
 
 // grantRefresh exchanges a (rotating) refresh token for fresh tokens.
@@ -56,18 +56,22 @@ func (s *Server) grantRefresh(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "client_id does not match the refresh token")
 		return
 	}
-	s.issueTokens(w, g.ClientID, g.Scope, g.Principal)
+	s.issueTokens(w, g.ClientID, g.Scope, g.Resource, g.Principal)
 }
 
-// issueTokens mints an access token (+ a rotating refresh token) and writes the
-// RFC 6749 token response.
-func (s *Server) issueTokens(w http.ResponseWriter, clientID, scope string, p PrincipalGrant) {
-	access, ttl, err := s.issuer.Mint(clientID, scope, p)
+// issueTokens mints an access token (+ a rotating refresh token) bound to the
+// given resource audience, and writes the RFC 6749 token response. An empty
+// resource falls back to the server's default audience (single-resource mode).
+func (s *Server) issueTokens(w http.ResponseWriter, clientID, scope, resource string, p PrincipalGrant) {
+	if resource == "" {
+		resource = s.resource
+	}
+	access, ttl, err := s.issuer.MintFor(clientID, scope, resource, p)
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not issue access token")
 		return
 	}
-	refresh, err := s.refresh.issue(clientID, scope, p)
+	refresh, err := s.refresh.issue(clientID, scope, resource, p)
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not issue refresh token")
 		return

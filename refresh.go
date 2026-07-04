@@ -9,6 +9,7 @@ const refreshStoreKey = "refresh-tokens"
 type refreshGrant struct {
 	ClientID  string         `json:"client_id"`
 	Scope     string         `json:"scope"`
+	Resource  string         `json:"resource,omitempty"`
 	Principal PrincipalGrant `json:"principal,omitzero"`
 }
 
@@ -22,15 +23,16 @@ func newRefreshStore(store SecretStore) *refreshStore {
 	return &refreshStore{grants: jsonMapStore[refreshGrant]{store: store, key: refreshStoreKey}}
 }
 
-// issue stores a fresh refresh token for clientID/scope/principal and
-// returns it.
-func (s *refreshStore) issue(clientID, scope string, p PrincipalGrant) (string, error) {
+// issue stores a fresh refresh token for clientID/scope/resource/principal and
+// returns it. resource is carried so a refresh mints a token for the same
+// audience as the original grant.
+func (s *refreshStore) issue(clientID, scope, resource string, p PrincipalGrant) (string, error) {
 	token, err := randToken(32)
 	if err != nil {
 		return "", err
 	}
 	if err := s.grants.mutate(func(m map[string]refreshGrant) bool {
-		m[token] = refreshGrant{ClientID: clientID, Scope: scope, Principal: p}
+		m[token] = refreshGrant{ClientID: clientID, Scope: scope, Resource: resource, Principal: p}
 		return true
 	}); err != nil {
 		return "", err

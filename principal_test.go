@@ -265,7 +265,7 @@ func TestRemovePrincipalSparesOthers(t *testing.T) {
 func TestRemoveForPrincipalEmptyNameIsNoop(t *testing.T) {
 	store := NewMemStore()
 	rs := newRefreshStore(store)
-	tok, err := rs.issue("client-1", "mcp", PrincipalGrant{})
+	tok, err := rs.issue("client-1", "mcp", "", PrincipalGrant{})
 	if err != nil {
 		t.Fatal(err)
 	}

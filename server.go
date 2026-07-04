@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"net/http"
@@ -37,7 +38,15 @@ type Config struct {
 	// audience and the `resource` advertised in Protected Resource Metadata.
 	// A client binds the audience to the exact endpoint it calls, so this must
 	// be the /mcp URL, not the bare host. Defaults to PublicURL when empty.
+	// The default (first) audience in multi-resource mode.
 	Resource string
+	// Resources, when set, makes this a multi-audience Authorization Server:
+	// the host case, where one AS fronts several tool mounts. Each entry is a
+	// mount's /mcp URL; the AS mints a per-mount audience for the RFC 8707
+	// `resource` a client requests, validated against this set. Resource (or
+	// PublicURL) is prepended as the default if not already present. Empty
+	// leaves the single-resource behavior unchanged.
+	Resources []string
 	// TokenTTL is the access-token lifetime (default 1h).
 	TokenTTL time.Duration
 	// Scopes advertised in metadata (default ["mcp"]).
@@ -46,20 +55,26 @@ type Config struct {
 	// their downstream credentials in the browser during the approval step
 	// (design-docs/enrollment.md). Optional; nil leaves the flow unchanged.
 	Enrollment *Enrollment
+	// Asymmetric makes the server sign with an Ed25519 key instead of the
+	// default HS256, so delegate resource servers (mounted tools) can validate
+	// its tokens with only the public key. The multi-tool host sets this;
+	// single-tool `--oauth local` leaves it false (self-signed, self-validated).
+	Asymmetric bool
 }
 
 // Server is the self-contained local OAuth Authorization Server and Resource
 // Server. It mints its own audience-bound tokens, gates /mcp behind them, and
 // serves the discovery + authorization endpoints a remote MCP client drives.
 type Server struct {
-	publicURL  string
-	resource   string
-	scopes     []string
-	issuer     *Issuer
-	pairing    *Pairing
-	codes      *authCodeStore
-	clients    *clientRegistry
-	refresh    *refreshStore
+	publicURL string
+	resource  string   // the default (primary) audience
+	resources []string // all audiences this AS may issue for (incl. resource)
+	scopes    []string
+	issuer    *Issuer
+	pairing   *Pairing
+	codes     *authCodeStore
+	clients   *clientRegistry
+	refresh   *refreshStore
 	enrollment *Enrollment
 }
 
@@ -77,6 +92,14 @@ func New(cfg Config) (*Server, error) {
 	if resource == "" {
 		resource = publicURL
 	}
+	// The allowed audience set: the default resource plus any additional mounts
+	// (multi-audience host mode). Deduped, default first.
+	resources := []string{resource}
+	for _, r := range cfg.Resources {
+		if r = strings.TrimRight(r, "/"); r != "" && r != resource && !contains(resources, r) {
+			resources = append(resources, r)
+		}
+	}
 	ttl := cfg.TokenTTL
 	if ttl <= 0 {
 		ttl = defaultTokenTTL
@@ -93,14 +116,21 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	// Tokens are bound to the resource (the /mcp endpoint), so the client — which
-	// binds the audience to the exact URL it calls — accepts them.
-	issuer, err := NewIssuer(cfg.Store, publicURL, resource, ttl)
+	// binds the audience to the exact URL it calls — accepts them. The host signs
+	// asymmetrically (Ed25519) so mounted tools verify with only its public key;
+	// a single-tool server self-signs (HS256).
+	newIssuer := NewIssuer
+	if cfg.Asymmetric {
+		newIssuer = NewEd25519Issuer
+	}
+	issuer, err := newIssuer(cfg.Store, publicURL, resource, ttl)
 	if err != nil {
 		return nil, err
 	}
 	return &Server{
 		publicURL:  publicURL,
 		resource:   resource,
+		resources:  resources,
 		scopes:     scopes,
 		issuer:     issuer,
 		pairing:    NewPairing(cfg.Store),
@@ -111,21 +141,60 @@ func New(cfg Config) (*Server, error) {
 	}, nil
 }
 
+// resolveResource maps a client's requested RFC 8707 `resource` to a validated
+// audience: empty defaults to the primary resource (single-resource clients
+// that omit it); a value must be one of the allowed audiences. ok=false means
+// the request targeted a resource this server does not serve.
+func (s *Server) resolveResource(requested string) (string, bool) {
+	if requested == "" {
+		return s.resource, true
+	}
+	requested = strings.TrimRight(requested, "/")
+	if contains(s.resources, requested) {
+		return requested, true
+	}
+	return "", false
+}
+
+// contains reports whether v is in xs.
+func contains(xs []string, v string) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
 // PairingCode returns the current pairing code (generating it on first use), for
 // the boot banner that tells the operator what to enter at /authorize.
 func (s *Server) PairingCode() (string, error) { return s.pairing.Code() }
+
+// PublicKey returns the server's Ed25519 public key when it signs
+// asymmetrically (Config.Asymmetric), or nil otherwise. The host hands this to
+// each mounted tool at spawn so the tool can validate the host's tokens.
+func (s *Server) PublicKey() ed25519.PublicKey { return s.issuer.PublicKey() }
 
 // RegisterRoutes mounts the discovery and authorization endpoints on mux. The
 // authorization endpoints stay namespaced under /oauth/; a spec-compliant client
 // finds them through the authorization-server metadata.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc(ProtectedResourceMetadataPath, s.handleProtectedResourceMetadata)
-	if p := s.resourcePath(); p != "" {
-		// RFC 9728 locates a path-bearing resource's metadata at
-		// /.well-known/oauth-protected-resource<path>; some clients construct
-		// that URL themselves instead of following the challenge's
-		// resource_metadata, so serve it there too.
-		mux.HandleFunc(ProtectedResourceMetadataPath+p, s.handleProtectedResourceMetadata)
+	// The base well-known path serves the default resource's metadata.
+	mux.HandleFunc(ProtectedResourceMetadataPath, func(w http.ResponseWriter, _ *http.Request) {
+		s.writePRM(w, s.resource)
+	})
+	// RFC 9728 locates a path-bearing resource's metadata at the suffixed path;
+	// some clients construct that URL themselves instead of following the
+	// challenge's resource_metadata, so serve each allowed resource there too.
+	// In multi-audience (host) mode this is one document per mount, each naming
+	// its own resource.
+	for _, res := range s.resources {
+		res := res
+		if suffix := resourceSuffix(s.publicURL, res); suffix != "" {
+			mux.HandleFunc(ProtectedResourceMetadataPath+suffix, func(w http.ResponseWriter, _ *http.Request) {
+				s.writePRM(w, res)
+			})
+		}
 	}
 	mux.HandleFunc(AuthServerMetadataPath, s.handleAuthServerMetadata)
 	mux.HandleFunc(RegisterPath, s.handleRegister)
@@ -168,12 +237,6 @@ func challengeUnauthorized(w http.ResponseWriter, prmURL, desc string) {
 	w.Header().Set("WWW-Authenticate",
 		fmt.Sprintf("Bearer resource_metadata=%q", prmURL))
 	writeOAuthError(w, http.StatusUnauthorized, "invalid_token", desc)
-}
-
-// resourcePath is the path component of the resource identifier (e.g. "/mcp"),
-// or "" when the resource is the bare host.
-func (s *Server) resourcePath() string {
-	return resourceSuffix(s.publicURL, s.resource)
 }
 
 // prmURL is the Protected Resource Metadata URL advertised in the 401 challenge —

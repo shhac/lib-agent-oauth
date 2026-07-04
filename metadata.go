@@ -2,12 +2,13 @@ package oauth
 
 import "net/http"
 
-// handleProtectedResourceMetadata serves the RFC 9728 Protected Resource
-// Metadata: it tells a client this resource's authorization server (us) and the
-// scopes it understands, so a 401 can bootstrap discovery.
-func (s *Server) handleProtectedResourceMetadata(w http.ResponseWriter, _ *http.Request) {
+// writePRM serves the RFC 9728 Protected Resource Metadata for one resource: it
+// tells a client that resource's authorization server (us) and the scopes it
+// understands, so a 401 can bootstrap discovery. In multi-audience (host) mode
+// each mount has its own PRM document naming its own resource.
+func (s *Server) writePRM(w http.ResponseWriter, resource string) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"resource":                 s.resource,
+		"resource":                 resource,
 		"authorization_servers":    []string{s.publicURL},
 		"scopes_supported":         s.scopes,
 		"bearer_methods_supported": []string{"header"},

@@ -15,7 +15,11 @@ type authGrant struct {
 	CodeChallenge       string
 	CodeChallengeMethod string
 	Scope               string
-	Principal           PrincipalGrant
+	// Resource is the audience the eventual token is bound to (RFC 8707) — the
+	// specific /mcp mount the client is authorizing for. Empty means the
+	// server's default (single-resource) audience.
+	Resource  string
+	Principal PrincipalGrant
 
 	expiresAt time.Time
 }

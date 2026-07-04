@@ -41,7 +41,7 @@ func TestSingleUseUnderConcurrency(t *testing.T) {
 
 	t.Run("refresh token exchanged once", func(t *testing.T) {
 		store := newRefreshStore(NewMemStore())
-		token, err := store.issue("client", "mcp", PrincipalGrant{})
+		token, err := store.issue("client", "mcp", "", PrincipalGrant{})
 		if err != nil {
 			t.Fatal(err)
 		}

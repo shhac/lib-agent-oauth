@@ -12,6 +12,7 @@ type authParams struct {
 	redirectURI         string
 	state               string
 	scope               string
+	resource            string
 	codeChallenge       string
 	codeChallengeMethod string
 	responseType        string
@@ -23,6 +24,7 @@ func parseAuthParams(v url.Values) authParams {
 		redirectURI:         v.Get("redirect_uri"),
 		state:               v.Get("state"),
 		scope:               v.Get("scope"),
+		resource:            v.Get("resource"),
 		codeChallenge:       v.Get("code_challenge"),
 		codeChallengeMethod: v.Get("code_challenge_method"),
 		responseType:        v.Get("response_type"),
@@ -40,6 +42,7 @@ func (p authParams) hiddenFields() map[string]string {
 		"code_challenge_method": p.codeChallengeMethod,
 		"state":                 p.state,
 		"scope":                 p.scope,
+		"resource":              p.resource,
 	}
 }
 
@@ -84,6 +87,12 @@ func (s *Server) validatedRequest(w http.ResponseWriter, r *http.Request, p auth
 	}
 	if errCode := validateAuthParams(p); errCode != "" {
 		s.redirectError(w, r, p, errCode)
+		return Client{}, false
+	}
+	// RFC 8707: the requested resource (token audience) must be one this server
+	// is allowed to issue for. A bad target is a redirectable error.
+	if _, ok := s.resolveResource(p.resource); !ok {
+		s.redirectError(w, r, p, "invalid_target")
 		return Client{}, false
 	}
 	return client, true
@@ -179,12 +188,14 @@ func (s *Server) resolveSetBindings(w http.ResponseWriter, r *http.Request, clie
 // and sends the browser back to the client — the flow's terminal step, shared
 // by the plain approval and the post-enrollment path.
 func (s *Server) issueAndRedirect(w http.ResponseWriter, r *http.Request, client Client, p authParams, principal PrincipalGrant) {
+	resource, _ := s.resolveResource(p.resource) // validated in validatedRequest
 	code, err := s.codes.issue(authGrant{
 		ClientID:            client.ID,
 		RedirectURI:         p.redirectURI,
 		CodeChallenge:       p.codeChallenge,
 		CodeChallengeMethod: p.codeChallengeMethod,
 		Scope:               s.grantedScope(p.scope),
+		Resource:            resource,
 		Principal:           principal,
 	})
 	if err != nil {

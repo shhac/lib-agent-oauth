@@ -124,9 +124,17 @@ func (i *Issuer) PublicKey() ed25519.PublicKey {
 	return nil
 }
 
-// Mint returns a signed access token for clientID with scope and the pairing
-// principal p, plus its lifetime. It errors on a verify-only issuer.
+// Mint returns a signed access token bound to the issuer's own audience — the
+// single-resource case. It errors on a verify-only issuer.
 func (i *Issuer) Mint(clientID, scope string, p PrincipalGrant) (token string, ttl time.Duration, err error) {
+	return i.MintFor(clientID, scope, i.audience, p)
+}
+
+// MintFor returns a signed access token bound to a specific audience, for a
+// multi-audience Authorization Server (the host) that mints per-mount tokens
+// from one signing key. The audience must be one the AS is allowed to issue
+// for — validation is the caller's responsibility (see Server.resolveResource).
+func (i *Issuer) MintFor(clientID, scope, audience string, p PrincipalGrant) (token string, ttl time.Duration, err error) {
 	if i.signKey == nil {
 		return "", 0, errors.New("oauth: verify-only issuer cannot mint tokens")
 	}
@@ -138,7 +146,7 @@ func (i *Issuer) Mint(clientID, scope string, p PrincipalGrant) (token string, t
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    i.issuer,
 			Subject:   clientID,
-			Audience:  jwt.ClaimStrings{i.audience},
+			Audience:  jwt.ClaimStrings{audience},
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(i.ttl)),
 		},
