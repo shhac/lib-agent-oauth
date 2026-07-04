@@ -98,11 +98,31 @@ func (p *Pairing) mutateExisting(name string, fn func(rec *principalRecord)) (bo
 
 // SetPrincipalBinding replaces an existing named principal's binding,
 // preserving its pairing code. It reports ok=false if no such principal
-// exists — the enrollment write path, which must never create membership.
+// exists.
 func (p *Pairing) SetPrincipalBinding(name string, binding map[string]string) (bool, error) {
 	return p.mutateExisting(name, func(rec *principalRecord) {
 		rec.Binding = binding
 	})
+}
+
+// MergePrincipalBinding overlays patch onto an existing named principal's
+// binding — same keys overwritten, others preserved — and returns the merged
+// result. This is the enrollment write path (which must never create
+// membership, hence ok=false for an unknown name): in host mode each tool's
+// enrollment contributes its own namespaced slice of the record, and one
+// tool's enrollment must not clobber another's.
+func (p *Pairing) MergePrincipalBinding(name string, patch map[string]string) (map[string]string, bool, error) {
+	var merged map[string]string
+	found, err := p.mutateExisting(name, func(rec *principalRecord) {
+		if rec.Binding == nil {
+			rec.Binding = map[string]string{}
+		}
+		for k, v := range patch {
+			rec.Binding[k] = v
+		}
+		merged = rec.Binding
+	})
+	return merged, found, err
 }
 
 // RotatePrincipal mints a fresh pairing code for an existing named principal,

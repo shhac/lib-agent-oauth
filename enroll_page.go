@@ -22,9 +22,10 @@ type enrollView struct {
 	Values map[string]string
 }
 
-// renderEnrollPage shows the descriptor-driven enrollment form.
-func (s *Server) renderEnrollPage(w http.ResponseWriter, client Client, p authParams, pairingCode string, principal PrincipalGrant, view enrollView) {
-	d := s.enrollment.Descriptor
+// renderEnrollPage shows the descriptor-driven enrollment form for e — the
+// enrollment divertToEnrollment resolved for this request's resource.
+func (s *Server) renderEnrollPage(w http.ResponseWriter, client Client, p authParams, pairingCode string, principal PrincipalGrant, view enrollView, e *Enrollment) {
+	d := e.Descriptor
 	selected := view.Mode
 	if selected == "" {
 		selected = d.Modes[0].Key
@@ -102,11 +103,11 @@ func collectModeFields(mode CredentialMode, get func(name string) string) (value
 // A follow-up POST after an EnrollResult.Choice carries the selection instead
 // of field values — the callback already holds (or encoded in State) whatever
 // it needs from the first round.
-func (s *Server) enrollSubmit(w http.ResponseWriter, r *http.Request, client Client, p authParams, principal PrincipalGrant) {
+func (s *Server) enrollSubmit(w http.ResponseWriter, r *http.Request, client Client, p authParams, principal PrincipalGrant, e *Enrollment) {
 	pairingCode := r.PostForm.Get("pairing_code")
-	mode, ok := s.enrollment.mode(r.PostForm.Get("enroll_mode"))
+	mode, ok := e.mode(r.PostForm.Get("enroll_mode"))
 	if !ok {
-		s.renderEnrollPage(w, client, p, pairingCode, principal, enrollView{Err: "Pick how you want to authenticate."})
+		s.renderEnrollPage(w, client, p, pairingCode, principal, enrollView{Err: "Pick how you want to authenticate."}, e)
 		return
 	}
 
@@ -114,16 +115,16 @@ func (s *Server) enrollSubmit(w http.ResponseWriter, r *http.Request, client Cli
 		choice := r.PostForm.Get("enroll_choice")
 		if choice == "" {
 			s.renderEnrollPage(w, client, p, pairingCode, principal,
-				enrollView{Mode: mode.Key, Err: "No option was selected — start again."})
+				enrollView{Mode: mode.Key, Err: "No option was selected — start again."}, e)
 			return
 		}
-		res, err := s.enrollment.Enroll(r.Context(), EnrollRequest{
+		res, err := e.Enroll(r.Context(), EnrollRequest{
 			Principal: principal.Name,
 			Mode:      mode.Key,
 			Choice:    choice,
 			State:     r.PostForm.Get("enroll_state"),
 		})
-		s.finishEnroll(w, r, client, p, pairingCode, principal, mode.Key, res, err, enrollView{Mode: mode.Key})
+		s.finishEnroll(w, r, client, p, pairingCode, principal, mode.Key, res, err, enrollView{Mode: mode.Key}, e)
 		return
 	}
 
@@ -131,16 +132,16 @@ func (s *Server) enrollSubmit(w http.ResponseWriter, r *http.Request, client Cli
 	view := enrollView{Mode: mode.Key, Values: nonSecret}
 	if len(missing) > 0 {
 		view.Err = "Required: " + strings.Join(missing, ", ")
-		s.renderEnrollPage(w, client, p, pairingCode, principal, view)
+		s.renderEnrollPage(w, client, p, pairingCode, principal, view, e)
 		return
 	}
 
-	res, err := s.enrollment.Enroll(r.Context(), EnrollRequest{
+	res, err := e.Enroll(r.Context(), EnrollRequest{
 		Principal: principal.Name,
 		Mode:      mode.Key,
 		Values:    values,
 	})
-	s.finishEnroll(w, r, client, p, pairingCode, principal, mode.Key, res, err, view)
+	s.finishEnroll(w, r, client, p, pairingCode, principal, mode.Key, res, err, view, e)
 }
 
 // finishEnroll routes an EnrollResult: error → re-render the form (secrets
@@ -154,10 +155,10 @@ func (s *Server) enrollSubmit(w http.ResponseWriter, r *http.Request, client Cli
 // token rather than being narrowed — the allowed-set chooser is an
 // operator-provisioning affordance (`pair add --bind k=a,b`), not an
 // enrollment one.
-func (s *Server) finishEnroll(w http.ResponseWriter, r *http.Request, client Client, p authParams, pairingCode string, principal PrincipalGrant, modeKey string, res EnrollResult, err error, view enrollView) {
+func (s *Server) finishEnroll(w http.ResponseWriter, r *http.Request, client Client, p authParams, pairingCode string, principal PrincipalGrant, modeKey string, res EnrollResult, err error, view enrollView, e *Enrollment) {
 	if err != nil {
 		view.Err = err.Error()
-		s.renderEnrollPage(w, client, p, pairingCode, principal, view)
+		s.renderEnrollPage(w, client, p, pairingCode, principal, view, e)
 		return
 	}
 	if res.Choice != nil {
@@ -172,12 +173,16 @@ func (s *Server) finishEnroll(w http.ResponseWriter, r *http.Request, client Cli
 		s.authorizeErrorPage(w, "internal error: enrollment returned no binding")
 		return
 	}
-	found, err := s.pairing.SetPrincipalBinding(principal.Name, res.Binding)
+	// Merge, not replace: in host mode the returned binding is one tool's
+	// namespaced slice of the principal's record — enrolling for slack must
+	// not wipe the lin keys enrolled last week. Same-key overwrite keeps
+	// single-tool re-enrollment idempotent as before.
+	merged, found, err := s.pairing.MergePrincipalBinding(principal.Name, res.Binding)
 	if err != nil || !found {
 		s.authorizeErrorPage(w, "internal error storing the credential binding")
 		return
 	}
-	s.issueAndRedirect(w, r, client, p, PrincipalGrant{Name: principal.Name, Binding: res.Binding})
+	s.issueAndRedirect(w, r, client, p, PrincipalGrant{Name: principal.Name, Binding: merged})
 }
 
 var enrollTmpl = template.Must(template.New("enroll").Parse(`<!doctype html>

@@ -55,6 +55,13 @@ type Config struct {
 	// their downstream credentials in the browser during the approval step
 	// (design-docs/enrollment.md). Optional; nil leaves the flow unchanged.
 	Enrollment *Enrollment
+	// EnrollmentForResource, when set, selects the enrollment per requested
+	// resource — the multi-tool host case, where each mount has its own
+	// descriptor and its own bridge to the tool's callback. It takes precedence
+	// over Enrollment; returning nil means that resource has no enrollment
+	// (unbound principals are simply not diverted). Results must be
+	// pre-validated with (*Enrollment).Validate — typically once at boot.
+	EnrollmentForResource func(resource string) *Enrollment
 	// Asymmetric makes the server sign with an Ed25519 key instead of the
 	// default HS256, so delegate resource servers (mounted tools) can validate
 	// its tokens with only the public key. The multi-tool host sets this;
@@ -84,7 +91,36 @@ type Server struct {
 	refresh   *refreshStore
 	enrollment *Enrollment
 
-	bindingForResource func(map[string]string, string) map[string]string
+	enrollmentForResource func(string) *Enrollment
+	bindingForResource    func(map[string]string, string) map[string]string
+}
+
+// enrollmentFor resolves which enrollment (if any) applies to an authorize
+// request: per-resource in host mode, the single configured one otherwise.
+func (s *Server) enrollmentFor(p authParams) *Enrollment {
+	if s.enrollmentForResource == nil {
+		return s.enrollment
+	}
+	resource, ok := s.resolveResource(p.resource)
+	if !ok {
+		return nil
+	}
+	return s.enrollmentForResource(resource)
+}
+
+// projectedBinding is the binding a token for this request's resource would
+// carry — BindingForResource applied in host mode, the raw binding otherwise.
+// The enrollment gate keys off THIS emptiness: a principal bound for lin but
+// not slack is unbound from /slack/mcp's point of view.
+func (s *Server) projectedBinding(binding map[string]string, p authParams) map[string]string {
+	if s.bindingForResource == nil {
+		return binding
+	}
+	resource, ok := s.resolveResource(p.resource)
+	if !ok {
+		return binding
+	}
+	return s.bindingForResource(binding, resource)
 }
 
 // New validates cfg and builds the server, loading or generating its signing key
@@ -148,7 +184,8 @@ func New(cfg Config) (*Server, error) {
 		refresh:    newRefreshStore(cfg.Store),
 		enrollment: cfg.Enrollment,
 
-		bindingForResource: cfg.BindingForResource,
+		enrollmentForResource: cfg.EnrollmentForResource,
+		bindingForResource:    cfg.BindingForResource,
 	}, nil
 }
 

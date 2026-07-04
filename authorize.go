@@ -93,15 +93,19 @@ func (s *Server) authorizeSubmit(w http.ResponseWriter, r *http.Request, p authP
 // principals — the anonymous operator acts with the CLI's own credentials and
 // has no binding to write.
 func (s *Server) divertToEnrollment(w http.ResponseWriter, r *http.Request, client Client, p authParams, principal PrincipalGrant) bool {
-	if s.enrollment == nil || principal.Name == "" {
+	e := s.enrollmentFor(p)
+	if e == nil || principal.Name == "" {
 		return false
 	}
 	if r.PostForm.Get("enroll") == "1" {
-		s.enrollSubmit(w, r, client, p, principal)
+		s.enrollSubmit(w, r, client, p, principal, e)
 		return true
 	}
-	if len(principal.Binding) == 0 || r.PostForm.Get("update_credentials") != "" {
-		s.renderEnrollPage(w, client, p, r.PostForm.Get("pairing_code"), principal, enrollView{})
+	// Unbound means unbound FOR THIS RESOURCE: in host mode a principal with
+	// only another tool's namespaced keys projects to empty here and still
+	// needs to enroll for this one.
+	if len(s.projectedBinding(principal.Binding, p)) == 0 || r.PostForm.Get("update_credentials") != "" {
+		s.renderEnrollPage(w, client, p, r.PostForm.Get("pairing_code"), principal, enrollView{}, e)
 		return true
 	}
 	return false
