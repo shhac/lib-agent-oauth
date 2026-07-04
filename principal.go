@@ -140,6 +140,17 @@ func (p *Pairing) RotatePrincipal(name string) (string, bool, error) {
 	return code, true, nil
 }
 
+// grantFor resolves a named principal's CURRENT grant — the session path's
+// per-use re-resolution, so a stale session can never resurrect a removed
+// principal or an outdated binding.
+func (p *Pairing) grantFor(name string) (PrincipalGrant, bool, error) {
+	rec, ok, err := p.principals.get(name)
+	if err != nil || !ok {
+		return PrincipalGrant{}, false, err
+	}
+	return PrincipalGrant{Name: name, Binding: rec.Binding}, true, nil
+}
+
 // PrincipalCode returns the stored pairing code for a named principal, with
 // ok=false if no such principal exists. Deliberate read-back for re-onboarding
 // a person's next session — callers must treat the result as a secret and
@@ -169,6 +180,9 @@ func (p *Pairing) RemovePrincipal(name string) (bool, error) {
 		return false, err
 	}
 	if err := newRefreshStore(p.store).removeForPrincipal(name); err != nil {
+		return removed, err
+	}
+	if err := newSessionStore(p.store, 0).removeForPrincipal(name); err != nil {
 		return removed, err
 	}
 	return removed, nil

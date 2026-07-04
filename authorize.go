@@ -46,31 +46,34 @@ func (s *Server) validatedRequest(w http.ResponseWriter, r *http.Request, p auth
 	return client, true
 }
 
-// authorizeForm validates the request, then shows the pairing-code form.
+// authorizeForm validates the request, then shows the pairing-code form —
+// session-aware: a recognized returning person sees "authorize to continue"
+// with the code input optional.
 func (s *Server) authorizeForm(w http.ResponseWriter, r *http.Request, p authParams) {
 	client, ok := s.validatedRequest(w, r, p)
 	if !ok {
 		return
 	}
-	s.renderForm(w, client, p, "")
+	s.renderForm(w, client, p, "", s.sessionName(r))
 }
 
-// authorizeSubmit re-validates, checks the pairing code, then — for a named
-// principal with enrollment configured — may divert into the enrollment page
-// before the usual authorization-code issue + redirect.
+// authorizeSubmit re-validates, verifies the person's identity (pairing code,
+// or an AS session for a returning person), then — for a named principal with
+// enrollment configured — may divert into the enrollment page before the
+// usual authorization-code issue + redirect.
 func (s *Server) authorizeSubmit(w http.ResponseWriter, r *http.Request, p authParams) {
 	client, valid := s.validatedRequest(w, r, p)
 	if !valid {
 		return
 	}
 
-	principal, ok, err := s.pairing.VerifyPrincipal(r.PostForm.Get("pairing_code"))
+	principal, ok, err := s.verifyIdentity(r)
 	if err != nil {
 		s.authorizeErrorPage(w, "internal error verifying the pairing code")
 		return
 	}
 	if !ok {
-		s.renderForm(w, client, p, "Incorrect pairing code — try again.")
+		s.renderForm(w, client, p, "Incorrect pairing code — try again.", "")
 		return
 	}
 
@@ -84,6 +87,31 @@ func (s *Server) authorizeSubmit(w http.ResponseWriter, r *http.Request, p authP
 	}
 
 	s.issueAndRedirect(w, r, client, p, principal)
+}
+
+// verifyIdentity establishes who is approving: an entered pairing code wins
+// (and is required when sessions are off); with no code entered, a valid AS
+// session cookie identifies the returning person. Every POST round of the
+// flow (approval, enrollment, chooser) re-verifies through this one gate.
+func (s *Server) verifyIdentity(r *http.Request) (PrincipalGrant, bool, error) {
+	if code := r.PostForm.Get("pairing_code"); code != "" {
+		return s.pairing.VerifyPrincipal(code)
+	}
+	return s.sessionPrincipal(r)
+}
+
+// sessionName is the label the form greets a session-recognized person with —
+// the principal's name, or "operator" for the anonymous shared code. Empty
+// means no usable session.
+func (s *Server) sessionName(r *http.Request) string {
+	grant, ok, err := s.sessionPrincipal(r)
+	if err != nil || !ok {
+		return ""
+	}
+	if grant.Name == "" {
+		return "operator"
+	}
+	return grant.Name
 }
 
 // divertToEnrollment handles the enrollment gate for a named principal: an
@@ -144,8 +172,11 @@ func (s *Server) resolveSetBindings(w http.ResponseWriter, r *http.Request, clie
 
 // issueAndRedirect mints the single-use authorization code carrying the grant
 // and sends the browser back to the client — the flow's terminal step, shared
-// by the plain approval and the post-enrollment path.
+// by the plain approval and the post-enrollment path. A code-entered flow
+// also starts the AS session here (when enabled), so the next tool skips the
+// code.
 func (s *Server) issueAndRedirect(w http.ResponseWriter, r *http.Request, client Client, p authParams, principal PrincipalGrant) {
+	s.maybeStartSession(w, r, principal)
 	resource, _ := s.resolveResource(p.resource) // validated in validatedRequest
 	code, err := s.codes.issue(authGrant{
 		ClientID:            client.ID,

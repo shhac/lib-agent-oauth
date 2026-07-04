@@ -24,31 +24,37 @@ input{font-size:1rem;padding:.55rem;width:100%;box-sizing:border-box;margin-top:
 .err{color:#b00020}
 </style></head><body>
 <h1>Connect {{if .ClientName}}“{{.ClientName}}”{{else}}this client{{end}}?</h1>
-<p class="muted">Enter the pairing code printed in the server's terminal to let this
-client call your tools. It then acts with your credentials.</p>
+{{if .SessionName}}<p class="muted">You're recognized as <b>{{.SessionName}}</b> from an earlier
+login — authorize to continue, or enter a different pairing code below.</p>
+{{else}}<p class="muted">Enter the pairing code printed in the server's terminal to let this
+client call your tools. It then acts with your credentials.</p>{{end}}
 {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
 <form method="post" action="{{.Action}}">
-  <label>Pairing code
-    <input type="password" name="pairing_code" placeholder="mcp-XXXXX-XXXXX-…" autofocus autocomplete="off">
+  <label>Pairing code{{if .SessionName}} <span class="muted">(optional)</span>{{end}}
+    <input type="password" name="pairing_code" placeholder="mcp-XXXXX-XXXXX-…"{{if not .SessionName}} autofocus{{end}} autocomplete="off">
   </label>
   {{if .OfferUpdate}}<label class="muted" style="display:block;margin-top:.5rem">
     <input type="checkbox" name="update_credentials" value="1"> Update my stored credentials
   </label>{{end}}
   {{range $k, $v := .Hidden}}<input type="hidden" name="{{$k}}" value="{{$v}}">{{end}}
-  <button type="submit">Authorize</button>
+  <button type="submit"{{if .SessionName}} autofocus{{end}}>Authorize</button>
 </form>
 </body></html>`))
 
-// renderForm shows the pairing-code form, echoing the request as hidden fields.
-func (s *Server) renderForm(w http.ResponseWriter, client Client, p authParams, errMsg string) {
+// renderForm shows the pairing-code form, echoing the request as hidden
+// fields. A non-empty sessionName renders the returning-person variant: the
+// code input turns optional and the button takes focus.
+func (s *Server) renderForm(w http.ResponseWriter, client Client, p authParams, errMsg, sessionName string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = authorizeTmpl.Execute(w, map[string]any{
-		"Action":     AuthorizePath,
-		"ClientName": client.Name,
-		"Error":      errMsg,
-		// The re-enrollment affordance: only meaningful when enrollment is
-		// configured; a tick by the anonymous operator is a no-op.
-		"OfferUpdate": s.enrollment != nil,
+		"Action":      AuthorizePath,
+		"ClientName":  client.Name,
+		"Error":       errMsg,
+		"SessionName": sessionName,
+		// The re-enrollment affordance: only meaningful when this request's
+		// resource has enrollment configured; a tick by the anonymous
+		// operator is a no-op.
+		"OfferUpdate": s.enrollmentFor(p) != nil,
 		"Hidden":      p.hiddenFields(),
 	})
 }

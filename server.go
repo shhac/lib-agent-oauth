@@ -67,6 +67,13 @@ type Config struct {
 	// its tokens with only the public key. The multi-tool host sets this;
 	// single-tool `--oauth local` leaves it false (self-signed, self-validated).
 	Asymmetric bool
+	// SessionTTL, when positive, enables AS browser sessions: after one
+	// successful pairing-code entry the AS sets a __Host- cookie, and
+	// connecting another tool skips the code — prompting only for the delta
+	// (that tool's enrollment, if unbound). Tokens stay audience-bound; the
+	// session shares only the identity proof, re-resolved from the pairing
+	// store on every use. Zero keeps the code-every-time behavior.
+	SessionTTL time.Duration
 	// BindingForResource, when set, transforms a principal's stored binding
 	// into the binding a token for `resource` should carry. The multi-tool host
 	// uses it to project a namespaced binding (slack:workspace=acme) down to the
@@ -80,16 +87,17 @@ type Config struct {
 // Server. It mints its own audience-bound tokens, gates /mcp behind them, and
 // serves the discovery + authorization endpoints a remote MCP client drives.
 type Server struct {
-	publicURL string
-	resource  string   // the default (primary) audience
-	resources []string // all audiences this AS may issue for (incl. resource)
-	scopes    []string
-	issuer    *Issuer
-	pairing   *Pairing
-	codes     *authCodeStore
-	clients   *clientRegistry
-	refresh   *refreshStore
+	publicURL  string
+	resource   string   // the default (primary) audience
+	resources  []string // all audiences this AS may issue for (incl. resource)
+	scopes     []string
+	issuer     *Issuer
+	pairing    *Pairing
+	codes      *authCodeStore
+	clients    *clientRegistry
+	refresh    *refreshStore
 	enrollment *Enrollment
+	sessions   *sessionStore // nil = sessions disabled
 
 	enrollmentForResource func(string) *Enrollment
 	bindingForResource    func(map[string]string, string) map[string]string
@@ -172,6 +180,10 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	var sessions *sessionStore
+	if cfg.SessionTTL > 0 {
+		sessions = newSessionStore(cfg.Store, cfg.SessionTTL)
+	}
 	return &Server{
 		publicURL:  publicURL,
 		resource:   resource,
@@ -183,6 +195,7 @@ func New(cfg Config) (*Server, error) {
 		clients:    newClientRegistry(cfg.Store),
 		refresh:    newRefreshStore(cfg.Store),
 		enrollment: cfg.Enrollment,
+		sessions:   sessions,
 
 		enrollmentForResource: cfg.EnrollmentForResource,
 		bindingForResource:    cfg.BindingForResource,
