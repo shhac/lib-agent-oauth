@@ -11,26 +11,33 @@ import (
 // custody of the submitted secrets. Secrets cross this boundary once, in
 // memory, in one direction.
 
+// The enrollment types below carry `json` tags because they double as the wire
+// protocol for out-of-process enrollment: agent-mcp-host reads a tool's
+// CredentialDescriptor from `<tool> mcp schema` and drives the tool's own
+// enrollment callback over a subprocess bridge (EnrollRequest in,
+// EnrollResult/EnrollChoice out). In-process (single-tool `--oauth local`) the
+// tags are simply unused.
+
 // CredentialField is one input on the enrollment form.
 type CredentialField struct {
 	// Key is the callback map key (and, namespaced, the form input name).
-	Key string
+	Key string `json:"key"`
 	// Label is the human-facing field label.
-	Label string
+	Label string `json:"label"`
 	// Help is a one-liner rendered under the field — where to find the value.
-	Help string
+	Help string `json:"help,omitempty"`
 	// Snippet, when non-empty, renders below Help as a distinct monospace code
 	// block with a copy button — for a command or console one-liner the human
 	// runs to obtain the value. Kept out of Help so it reads as "copy this",
 	// not prose. The copy button is progressive enhancement; the block is
 	// selectable without JS.
-	Snippet string
+	Snippet string `json:"snippet,omitempty"`
 	// Secret renders a password input; the value is never logged and never
 	// re-echoed into a re-rendered form.
-	Secret bool
+	Secret bool `json:"secret,omitempty"`
 	// Optional fields may be left empty; all others are required before the
 	// callback is invoked.
-	Optional bool
+	Optional bool `json:"optional,omitempty"`
 }
 
 // CredentialMode is one mutually-exclusive way of authenticating, with its
@@ -38,18 +45,18 @@ type CredentialField struct {
 // secret's own shape identifies it (key prefixes); declare several modes only
 // when the field sets genuinely differ. A single mode renders no selector.
 type CredentialMode struct {
-	Key    string
-	Label  string
-	Fields []CredentialField
+	Key    string            `json:"key"`
+	Label  string            `json:"label,omitempty"`
+	Fields []CredentialField `json:"fields"`
 }
 
 // CredentialDescriptor declares what the enrollment form asks for. It is
 // static, non-secret data; the lib renders it verbatim and understands none
 // of it.
 type CredentialDescriptor struct {
-	Title string
-	Intro string
-	Modes []CredentialMode
+	Title string           `json:"title,omitempty"`
+	Intro string           `json:"intro,omitempty"`
+	Modes []CredentialMode `json:"modes"`
 }
 
 // EnrollRequest carries one form submission to the callback.
@@ -57,22 +64,22 @@ type EnrollRequest struct {
 	// Principal is the verified principal name — the callback must scope every
 	// write to it; there is no input through which a caller can name another
 	// principal's credentials.
-	Principal string
+	Principal string `json:"principal"`
 	// Mode is the key of the chosen CredentialMode.
-	Mode string
+	Mode string `json:"mode,omitempty"`
 	// Values holds the submitted fields for that mode, keyed by field Key.
-	Values map[string]string
+	Values map[string]string `json:"values,omitempty"`
 	// Choice and State are set only on the follow-up call after the callback
 	// returned an EnrollChoice; Values is empty on that call. Choice is
 	// untrusted input — the callback must re-validate it against its own data.
-	Choice string
-	State  string
+	Choice string `json:"choice,omitempty"`
+	State  string `json:"state,omitempty"`
 }
 
 // ChoiceOption is one selectable option in an EnrollChoice.
 type ChoiceOption struct {
-	Value string
-	Label string
+	Value string `json:"value"`
+	Label string `json:"label"`
 }
 
 // EnrollChoice asks the human to pick among options the callback could only
@@ -81,20 +88,20 @@ type ChoiceOption struct {
 // EnrollRequest.Choice. Chains are allowed: a follow-up may return another
 // Choice.
 type EnrollChoice struct {
-	Prompt  string
-	Options []ChoiceOption
+	Prompt  string         `json:"prompt"`
+	Options []ChoiceOption `json:"options"`
 	// State is opaque callback state, round-tripped into the follow-up
 	// EnrollRequest. It is rendered into the page as a hidden field, so it
 	// must never contain secrets.
-	State string
+	State string `json:"state,omitempty"`
 }
 
 // EnrollResult is what the callback returns: a Binding (done — persisted on
 // the pairing record, after which the OAuth flow resumes) or a Choice (the
 // chooser page renders the options and the callback is called again).
 type EnrollResult struct {
-	Binding map[string]string
-	Choice  *EnrollChoice
+	Binding map[string]string `json:"binding,omitempty"`
+	Choice  *EnrollChoice     `json:"choice,omitempty"`
 }
 
 // EnrollFunc validates and stores the submitted credentials, returning the
